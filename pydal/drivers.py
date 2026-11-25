@@ -94,6 +94,15 @@ except ImportError:
     pass
 
 try:
+    # psycopg 3: used synchronously like psycopg2, and asynchronously
+    # (through its AsyncConnection) when running inside pydal.aio.
+    import psycopg
+
+    DRIVERS["psycopg"] = psycopg
+except ImportError:
+    pass
+
+try:
     import cx_Oracle  # noqa: F811
 
     DRIVERS["cx_Oracle"] = cx_Oracle

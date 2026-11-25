@@ -13,6 +13,11 @@ from ..utils import split_uri_args
 from ..backend_base import AdapterMeta, adapters, with_connection, with_connection_or_raise
 from ..backend_base import SQLAdapter
 
+try:  # optional async support (needs greenlet)
+    from .. import aio as _aio
+except ImportError:  # pragma: no cover - greenlet not installed
+    _aio = None
+
 
 class PostgresMeta(AdapterMeta):
     """
@@ -52,7 +57,10 @@ class Postgres(SQLAdapter, metaclass=PostgresMeta):
     """
 
     dbengine = "postgres"
-    drivers = ("psycopg2",)
+    # psycopg2 stays first so existing installs keep the driver they use
+    # today; psycopg (v3) is picked when it is the only one installed or
+    # when the URI asks for it (postgres:psycopg://...).
+    drivers = ("psycopg2", "psycopg")
     support_distributed_transaction = True
 
     REGEX_URI = (
@@ -113,7 +121,7 @@ class Postgres(SQLAdapter, metaclass=PostgresMeta):
         if socket:
             if not os.path.exists(socket):
                 raise ValueError("UNIX socket %r not found" % socket)
-            if self.driver_name == "psycopg2":
+            if self.driver_name in ("psycopg2", "psycopg"):
                 # the psycopg2 driver let you configure the socket directory
                 # only (not the socket file name) by passing it as the host
                 # (must be an absolute path otherwise the driver tries a TCP/IP
@@ -125,8 +133,16 @@ class Postgres(SQLAdapter, metaclass=PostgresMeta):
             port = int(m.group("port") or 5432)
             self.driver_args.update(host=host, port=port)
             sslmode = uri_args.get("sslmode")
-            if sslmode and self.driver_name == "psycopg2":
+            if sslmode and self.driver_name in ("psycopg2", "psycopg"):
                 self.driver_args["sslmode"] = sslmode
+        if self.driver_name == "psycopg":
+            # libpq keyword; psycopg2 accepts the "database" alias, psycopg 3 does not
+            self.driver_args["dbname"] = self.driver_args.pop("database")
+            # No automatic server-side prepared statements by default, like
+            # psycopg2: they break after ALTER TABLE ("cached plan must not
+            # change result type") and behind PgBouncer in transaction mode.
+            # Pass driver_args={"prepare_threshold": 5} to opt in.
+            self.driver_args.setdefault("prepare_threshold", None)
         if self.driver:
             self.__version__ = "%s %s" % (self.driver.__name__, self.driver.__version__)
         else:
@@ -279,6 +295,87 @@ class PostgresBoolean(PostgresNew):
 @adapters.register_for("postgres3:psycopg2")
 class PostgresPsycoBoolean(PostgresPsycoNew, PostgresBoolean):
     """psycopg2 + native arrays + native booleans."""
+
+
+class PsycopgMixin(object):
+    """
+    psycopg (v3) driver support, shared by the postgres, postgres2 and
+    postgres3 flavours.
+
+    Synchronously it behaves like the psycopg2 adapters. When the
+    adapter is used from inside ``pydal.aio`` (FastAPI and other asyncio
+    servers) it transparently switches to psycopg's ``AsyncConnection``
+    and a per-event-loop async connection pool, so the event loop is
+    never blocked. See ``pydal/aio.py``.
+    """
+
+    drivers = ("psycopg",)
+
+    def adapt(self, obj):
+        """
+        SQL literal for ``obj``, matching psycopg2's ``adapt`` output for
+        the types pyDAL inlines (strings, numbers, booleans, None, lists).
+        """
+        if isinstance(obj, str):
+            if "\x00" in obj:
+                raise ValueError("A string literal cannot contain NUL (0x00) characters.")
+            return "'%s'" % obj.replace("'", "''")
+        if obj is None:
+            return "NULL"
+        if obj is True:
+            return "true"
+        if obj is False:
+            return "false"
+        if isinstance(obj, int):
+            return repr(obj)
+        if isinstance(obj, float):
+            if obj != obj or obj in (float("inf"), float("-inf")):
+                return "'%r'::float" % obj
+            return repr(obj)
+        if isinstance(obj, tuple):  # psycopg2 renders tuples for IN (...)
+            return "(%s)" % ",".join(self.adapt(x) for x in obj)
+        if isinstance(obj, list):
+            if not obj:
+                return "'{}'"
+            return "ARRAY[%s]" % ",".join(self.adapt(x) for x in obj)
+        from psycopg.sql import Literal
+
+        return Literal(obj).as_string(self.connection)
+
+    def _config_json(self):
+        # psycopg 3 decodes json/jsonb into Python objects, like psycopg2 >= 2.5
+        if self.connection.info.server_version >= 90200:
+            self.dialect = self._get_json_dialect()(self)
+            self.parser = self._get_json_parser()(self)
+
+    # --- async bridge (no-ops unless running inside pydal.aio) ---------
+
+    def get_connection(self, use_pool=True):
+        if _aio is not None:
+            if _aio.in_bridge():
+                return _aio.bridge_get_connection(self)
+            _aio.warn_if_blocking()
+        return super(PsycopgMixin, self).get_connection(use_pool)
+
+    def close(self, action="commit", really=True):
+        if _aio is not None and _aio.in_bridge():
+            return _aio.bridge_close(self, action, really)
+        return super(PsycopgMixin, self).close(action, really)
+
+
+@adapters.register_for("postgres:psycopg")
+class PostgresPsycopg(PsycopgMixin, Postgres):
+    """psycopg 3 adapter (sync, and async inside ``pydal.aio``)."""
+
+
+@adapters.register_for("postgres2:psycopg")
+class PostgresPsycopgNew(PsycopgMixin, PostgresNew):
+    """psycopg 3 + native arrays."""
+
+
+@adapters.register_for("postgres3:psycopg")
+class PostgresPsycopgBoolean(PsycopgMixin, PostgresBoolean):
+    """psycopg 3 + native arrays + native booleans."""
 
 
 @adapters.register_for("jdbc:postgres")

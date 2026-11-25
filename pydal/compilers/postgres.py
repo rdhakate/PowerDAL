@@ -9,7 +9,7 @@ for the ``~~`` (LIKE) operator.
 from __future__ import annotations
 
 from .. import ast
-from ..backends.postgres import Postgres, PostgresPsyco
+from ..backends.postgres import Postgres, PostgresPsyco, PsycopgMixin
 from . import compilers
 from .sql import SQLCompiler
 
@@ -28,7 +28,9 @@ class PostgresCompiler(SQLCompiler):
         if isinstance(node, ast.Literal) and node.type == "json_path":
             if self._ctx is not None:
                 return "%s::text[]" % self._ctx.bind(node.value)
-            if self.adapter is not None and isinstance(self.adapter, PostgresPsyco):
+            if self.adapter is not None and isinstance(
+                self.adapter, (PostgresPsyco, PsycopgMixin)
+            ):
                 return str(self.adapter.adapt(node.value))
             return "ARRAY[%s]::text[]" % ",".join(
                 str(self._represent(value, "string")) for value in node.value
@@ -142,6 +144,21 @@ class PostgresCompiler(SQLCompiler):
 class PostgresPsycoCompiler(PostgresCompiler):
     parameterize = True
     placeholder_style = "format"
+
+
+def _register_psycopg3():
+    # psycopg 3 uses the same "%s" placeholders as psycopg2
+    from ..backends.postgres import (
+        PostgresPsycopg,
+        PostgresPsycopgBoolean,
+        PostgresPsycopgNew,
+    )
+
+    for cls in (PostgresPsycopg, PostgresPsycopgNew, PostgresPsycopgBoolean):
+        compilers.register_for(cls)(PostgresPsycoCompiler)
+
+
+_register_psycopg3()
 
 
 __all__ = ["PostgresCompiler", "PostgresPsycoCompiler"]
