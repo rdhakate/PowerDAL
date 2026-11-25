@@ -1,7 +1,7 @@
 BSD 3-clause license
 
 Copyright (c) 2018, Massimo Di Pierro <massimo.dipierro@gmail.com>
-Portions Copyright (c) 2026, Gentlemans Digital Products
+Portions Copyright (c) 2026, Rahul Arun Dhakate
 (Gentleman's ebooks & digital products, https://gentlemansebooks.com)
 All rights reserved.
 
