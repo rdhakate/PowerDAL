@@ -1,6 +1,8 @@
 include LICENSE.txt
 include AUTHORS
 include CHANGES
+include NOTICE.md
+include POWERDAL.md
 recursive-include tests *
 recursive-exclude tests .DS_Store
 recursive-include docs *

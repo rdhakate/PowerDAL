@@ -1,0 +1,61 @@
+name: powerdal-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pydal_test
+          POSTGRES_PASSWORD: pydal_test
+          POSTGRES_DB: pydal_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          sudo apt-get install -y memcached libmemcached-tools
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+      - name: Test - SQLite
+        run: python -m unittest tests
+      - name: Test - PostgreSQL, psycopg2 (existing users)
+        env:
+          DB: postgres://pydal_test:pydal_test@localhost:5432/pydal_test
+        run: python -m unittest tests
+      - name: Test - PostgreSQL, psycopg 3 (sync)
+        env:
+          DB: postgres:psycopg://pydal_test:pydal_test@localhost:5432/pydal_test
+        run: python -m unittest tests
+      - name: Test - whole suite through the async bridge
+        env:
+          DB: postgres:psycopg://pydal_test:pydal_test@localhost:5432/pydal_test
+        run: python tools/run_suite_in_bridge.py
+      - name: Test - without greenlet (sync-only install)
+        run: |
+          python -m pip uninstall -y greenlet
+          python -c "import pydal, sys; from pydal._globals import THREAD_LOCAL; import threading; assert isinstance(THREAD_LOCAL, threading.local); print('sync-only import OK')"
+          python -m unittest tests.powerdal

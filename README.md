@@ -1,3 +1,39 @@
+# PowerDAL
+
+**A drop-in fork of pyDAL with a non-blocking asyncio mode for FastAPI,
+a psycopg 3 adapter, a 2–2.6x faster row parser and batched bulk
+inserts. Your existing pyDAL code keeps working unchanged.**
+
+```python
+from pydal import DAL, Field              # same import as pyDAL
+from pydal.aio import asyncify
+
+db = DAL("postgres:psycopg://user:pw@localhost/app", pool_size=20)
+db.define_table("thing", Field("name"))
+
+@app.get("/things/{thing_id}")
+@asyncify                                 # plain pyDAL code, non-blocking
+def get_thing(thing_id: int):
+    return db.thing[thing_id].as_dict()
+```
+
+```bash
+pip uninstall -y pydal
+pip install "powerdal[async] @ git+https://github.com/rdhakate/PowerDAL.git@main"
+```
+
+**Full documentation, benchmarks and the compatibility notes are in
+[POWERDAL.md](POWERDAL.md).**
+
+Published by Gentlemans Digital Products — *Gentleman's ebooks & digital
+products* — <https://gentlemansebooks.com>. Based on
+[pyDAL](https://github.com/web2py/pydal) by Massimo Di Pierro and
+contributors, BSD 3-clause (see [NOTICE.md](NOTICE.md)).
+
+---
+
+*The original pyDAL README follows; everything in it still applies.*
+
 # pyDAL
 
 [![pip version](https://img.shields.io/pypi/v/pydal.svg?style=flat-square)](https://pypi.python.org/pypi/pydal)

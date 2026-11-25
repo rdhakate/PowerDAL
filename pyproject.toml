@@ -1,36 +1,61 @@
 [project]
-name = "pydal"
-authors = [{ name="Massimo Di Pierro", email="massimo.dipierro@gmail.com" },]
-description = 'pyDAL is a Database Abstraction Layer. It generates queries for SQlite, PotsgreSQL, MySQL, and other backends. It was originally part of the web2py frameworks but it is now an independent project. Example: db.define_table("thing",Field("name")) and db.thing.insert(name="Pizza")'
+# PowerDAL: a drop-in fork of pyDAL (import name stays "pydal") adding a
+# non-blocking asyncio mode for FastAPI & co. plus speed optimisations.
+name = "powerdal"
+authors = [
+    { name="Massimo Di Pierro", email="massimo.dipierro@gmail.com" },
+    { name="Gentlemans Digital Products (PowerDAL additions)" },
+]
+description = 'PowerDAL is a drop-in fork of pyDAL (import pydal) that adds a non-blocking asyncio mode for FastAPI and other async servers, a psycopg 3 adapter, a faster row parser and batched bulk inserts. pyDAL is a Database Abstraction Layer generating queries for SQLite, PostgreSQL, MySQL and other backends.'
 readme = "README.md"
 requires-python = ">=3.10"
 classifiers = [
       "Programming Language :: Python :: 3",
       "License :: OSI Approved :: BSD License",
       "Operating System :: OS Independent",
+      "Framework :: AsyncIO",
+      "Framework :: FastAPI",
+      "Topic :: Database",
 ]
 dynamic = ["version"]
 
 [tool.setuptools.dynamic]
-version = {attr = "pydal.__init__.__version__"}
+# the distribution has its own version; pydal.__version__ keeps tracking
+# the upstream pyDAL release this fork is based on (for compatibility checks)
+version = {attr = "pydal.__init__.__powerdal_version__"}
 
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project.urls]
-"Homepage" = "https://github.com/web2py/pydal"
-"Bug Tracker" = "https://github.com/web2py/pydal/issues"
-"Documentation" = "https://py4web.com/_documentation/static/en/chapter-07.html"
+"Homepage" = "https://github.com/rdhakate/PowerDAL"
+"Bug Tracker" = "https://github.com/rdhakate/PowerDAL/issues"
+"Documentation" = "https://github.com/rdhakate/PowerDAL/blob/main/POWERDAL.md"
+"Upstream pyDAL" = "https://github.com/web2py/pydal"
+"pyDAL Documentation" = "https://py4web.com/_documentation/static/en/chapter-07.html"
+"Publisher" = "https://gentlemansebooks.com"
 
 [tool.ruff.lint]
 select = []
 ignore = ["E711", "E712"]
 
 [project.optional-dependencies]
+# non-blocking mode for asyncio servers (pydal.aio)
+async = [
+    "greenlet>=3.0",
+    "psycopg[binary]>=3.1",
+]
+# psycopg 3 for synchronous use only
+psycopg = [
+    "psycopg[binary]>=3.1",
+]
 test = [
     "legacy-cgi; python_version >= '3.13'",
     "psycopg2-binary",
+    "greenlet>=3.0",
+    "psycopg[binary]>=3.1",
+    "fastapi>=0.110",
 ]
 manage = [
     "twine",

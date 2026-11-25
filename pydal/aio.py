@@ -11,7 +11,7 @@ working, and the event loop is never blocked by the database.
 This is the same technique SQLAlchemy uses for its asyncio extension.
 It needs the ``greenlet`` package and the ``psycopg`` (v3) driver::
 
-    pip install "pydal-async[async]"
+    pip install "powerdal[async]"
 
 FastAPI example::
 
@@ -57,7 +57,13 @@ import time
 import warnings
 import weakref
 
-from greenlet import getcurrent, greenlet
+try:
+    from greenlet import getcurrent, greenlet
+except ImportError:  # pragma: no cover
+    raise ImportError(
+        "pydal.aio needs the 'greenlet' package (and 'psycopg' for Postgres): "
+        'pip install "powerdal[async]"'
+    ) from None
 
 from ._globals import THREAD_LOCAL
 

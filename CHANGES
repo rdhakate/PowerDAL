@@ -1,6 +1,20 @@
 pyDAL changelog
 ===============
 
+PowerDAL 1.0.0
+--------------
+
+Released on November 25th 2026. Based on pyDAL 20261107.0. See POWERDAL.md.
+
+- new pydal.aio: non-blocking asyncio mode (greenlet bridge, async pool,
+  asyncify/run) for FastAPI and other async servers
+- new psycopg 3 adapters: postgres:psycopg, postgres2:psycopg, postgres3:psycopg
+- faster row parser (2-2.6x on large selects), identical output
+- bulk_insert uses multi-row INSERT ... RETURNING on PostgreSQL and SQLite >= 3.35
+- optional pool_check_idle to skip liveness tests on recently used pooled connections
+- THREAD_LOCAL is greenlet-aware when greenlet is installed
+- distribution renamed "powerdal" (import name stays "pydal"); extras async, psycopg, test
+
 Version 18.0
 ------------
 

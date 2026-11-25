@@ -13,7 +13,8 @@ Public API exposed at the package root:
 See ``README.md`` for the full API tour.
 """
 
-__version__ = "20261107.0"
+__version__ = "20261107.0"  # upstream pyDAL release this fork is based on
+__powerdal_version__ = "1.0.0"  # PowerDAL release
 
 from .base import DAL
 from .helpers.classes import SQLCustomType
@@ -31,4 +32,5 @@ __all__ = [
     "geoPoint",
     "geoPolygon",
     "__version__",
+    "__powerdal_version__",
 ]
