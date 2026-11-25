@@ -38,6 +38,16 @@ class SQLite(SQLAdapter):
     across threads.
     """
 
+    # multi-row INSERT ... RETURNING needs SQLite >= 3.35; 999 is the
+    # most conservative SQLITE_MAX_VARIABLE_NUMBER any build uses.
+    bulk_insert_limits = (500, 999)
+
+    @property
+    def bulk_insert_returning(self):
+        if getattr(self, "driver_name", None) != "sqlite3":
+            return False
+        return getattr(self.driver, "sqlite_version_info", (0,)) >= (3, 35, 0)
+
     dbengine = "sqlite"
     drivers = ("sqlite2", "sqlite3")
 

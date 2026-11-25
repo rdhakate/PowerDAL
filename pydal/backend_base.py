@@ -38,6 +38,7 @@ from .exceptions import NotOnNOSQLError
 from .helpers._internals import Dispatcher
 from .helpers.classes import (
     SQLALL,
+    BasicStorage,
     ExecutionHandler,
     NullDriver,
     Reference,
@@ -984,21 +985,176 @@ class BaseAdapter(ConnectionPool, metaclass=AdapterMeta):
                 )
         return (fields_virtual, fields_lazy, tmps)
 
+    def _fast_parse_ok(self, tmps):
+        """
+        True when ``_fast_parse_rows`` gives exactly what ``_parse`` gives:
+        every column is a plain table field and no adapter, parser or Row
+        hook involved in parsing has been overridden.
+        """
+        if not tmps or None in tmps:
+            return False
+        cls = type(self)
+        Row = self.db.Row
+        return (
+            cls.parse_value is BaseAdapter.parse_value
+            and cls._parse is BaseAdapter._parse
+            and cls._add_operators_to_parsed_row is BaseAdapter._add_operators_to_parsed_row
+            and cls._add_reference_sets_to_parsed_row
+            is BaseAdapter._add_reference_sets_to_parsed_row
+            and type(self.parser).parse is Parser.parse
+            and Row.__init__ is BasicStorage.__init__
+            and Row.__setitem__ is BasicStorage.__setitem__
+            and Row.__setattr__ is object.__setattr__
+        )
+
+    def _column_converter(self, field, ft, fit, blob_decode):
+        """
+        Precompute ``value -> parse_value(value, fit, ft, blob_decode)``
+        followed by ``field.filter_out``, for one column. Returns None
+        when the column needs no conversion at all.
+        """
+        # parse_value's ``value.decode(...)`` attempt on str is a no-op on
+        # Python 3 (str has no .decode), so it is not reproduced here.
+        if isinstance(ft, SQLCustomType):
+            decoder = ft.decoder
+            conv = decoder  # applied to every value, None included
+        elif not isinstance(ft, str) or (ft == "blob" and not blob_decode):
+            conv = None
+        else:
+            parser = self.parser
+            wrapper = parser.registered[fit]
+            if isinstance(wrapper, ParserMethodWrapper):
+                f = wrapper.f
+                p = wrapper.parser
+                if hasattr(wrapper, "extra"):
+                    extras = wrapper.extra(p, ft)
+
+                    def conv(value, f=f, p=p, extras=extras):
+                        return None if value is None else f(p, value, **extras)
+
+                else:
+
+                    def conv(value, f=f, p=p):
+                        return None if value is None else f(p, value)
+
+            elif getattr(wrapper, "__func__", None) is Parser._default:
+                conv = None
+            else:
+
+                def conv(value, wrapper=wrapper, ft=ft):
+                    return None if value is None else wrapper(value, ft)
+
+        filter_out = field.filter_out
+        if filter_out:
+            if conv is None:
+                return filter_out
+
+            def conv_filtered(value, conv=conv, filter_out=filter_out):
+                return filter_out(conv(value))
+
+            return conv_filtered
+        return conv
+
+    def _fast_parse_rows(
+        self, rows, tmps, blob_decode, cacheable, fields_virtual, fields_lazy
+    ):
+        """
+        Same result as calling ``_parse`` on every row, with all per-column
+        decisions (converter, id handling, reference sets) taken once per
+        query instead of once per value.
+        """
+        db = self.db
+        Row = db.Row
+        record_ops = list(db.record_operators.items())
+        lazy_tables = None
+        referee_name = db._referee_name
+        plan = []
+        for j, (tablename, fieldname, table, field, ft, fit) in enumerate(tmps):
+            conv = self._column_converter(field, ft, fit, blob_decode)
+            alias_id = ft == "id" and fieldname != "id" and "id" not in table.fields
+            id_ops = None
+            if ft == "id" and not cacheable:
+                refsets = []
+                if hasattr(table, "_referenced_by"):
+                    for rfield in table._referenced_by:
+                        link = referee_name and referee_name % dict(
+                            table=rfield.tablename, field=rfield.name
+                        )
+                        if link and link != tablename:
+                            refsets.append((link, rfield))
+                id_ops = (table, table._db._lazy_tables, refsets)
+            plan.append((j, tablename, fieldname, conv, alias_id, id_ops))
+        virtuals = [
+            (tablename, fields_virtual[tablename][1], fields_lazy[tablename][1])
+            for tablename in fields_virtual
+            if fields_virtual[tablename][1] or fields_lazy[tablename][1]
+        ]
+        # Row() and Row(**d) only fill the instance __dict__ (checked by
+        # _fast_parse_ok), so rows are built by attaching dicts directly.
+        new = object.__new__
+        new_rows = []
+        append = new_rows.append
+        for row in rows:
+            new_row = {}
+            for j, tablename, fieldname, conv, alias_id, id_ops in plan:
+                value = row[j]
+                if conv is not None:
+                    value = conv(value)
+                colset = new_row.get(tablename)
+                if colset is None:
+                    colset = new_row[tablename] = new(Row)
+                    colset.__dict__ = d = {}
+                else:
+                    d = colset.__dict__
+                d[fieldname] = value
+                if alias_id:
+                    d["id"] = value
+                if id_ops is not None:
+                    table, lazy_tables, refsets = id_ops
+                    for key, record_operator in record_ops:
+                        d[key] = record_operator(colset, table, value)
+                    if lazy_tables:
+                        d["__get_lazy_reference__"] = LazyReferenceGetter(table, value)
+                    for link, rfield in refsets:
+                        if link not in d:
+                            d[link] = LazySet(rfield, value)
+            outer = new(Row)
+            outer.__dict__ = new_row
+            new_row = outer
+            for tablename, vfields, lfields in virtuals:
+                for f, v in vfields:
+                    try:
+                        new_row[tablename][f] = v.f(new_row)
+                    except (AttributeError, KeyError):
+                        pass  # not enough fields to define virtual field
+                for f, v in lfields:
+                    try:
+                        new_row[tablename][f] = v.handler(v.f, new_row)
+                    except (AttributeError, KeyError):
+                        pass  # not enough fields to define virtual field
+            append(new_row)
+        return new_rows
+
     def parse(self, rows, fields, colnames, blob_decode=True, cacheable=False):
         (fields_virtual, fields_lazy, tmps) = self._parse_expand_colnames(fields)
-        new_rows = [
-            self._parse(
-                row,
-                tmps,
-                fields,
-                colnames,
-                blob_decode,
-                cacheable,
-                fields_virtual,
-                fields_lazy,
+        if self._fast_parse_ok(tmps):
+            new_rows = self._fast_parse_rows(
+                rows, tmps, blob_decode, cacheable, fields_virtual, fields_lazy
             )
-            for row in rows
-        ]
+        else:
+            new_rows = [
+                self._parse(
+                    row,
+                    tmps,
+                    fields,
+                    colnames,
+                    blob_decode,
+                    cacheable,
+                    fields_virtual,
+                    fields_lazy,
+                )
+                for row in rows
+            ]
         rowsobj = self.db.Rows(self.db, new_rows, colnames, rawrows=rows, fields=fields)
         # Old style virtual fields
         for tablename, tmp in fields_virtual.items():
@@ -1688,8 +1844,95 @@ class SQLAdapter(BaseAdapter):
         self.execute(self._count(query, distinct))
         return self.cursor.fetchone()[0]
 
+    #: Adapters whose database supports multi-row ``INSERT ... RETURNING``
+    #: set this to True; ``bulk_insert`` then sends rows in batches.
+    bulk_insert_returning = False
+    #: (max rows, max bound parameters) per multi-row INSERT statement
+    bulk_insert_limits = (1000, 30000)
+
     def bulk_insert(self, table, items):
+        ids = self._bulk_insert_multirow(table, items)
+        if ids is not None:
+            return ids
         return [self.insert(table, item) for item in items]
+
+    def _bulk_insert_multirow(self, table, items):
+        """
+        Insert ``items`` with a few multi-row ``INSERT ... RETURNING id``
+        statements instead of one round trip per row.
+
+        Returns the same list of ``Reference`` ids as row-by-row
+        ``insert`` would, or ``None`` when this table/data needs the
+        row-by-row path (keyed tables, custom insert-error handlers,
+        explicit ids, SQL that is not fully parameterized).
+        """
+        if (
+            not self.bulk_insert_returning
+            or len(items) < 2
+            or self.compiler is None
+            or not hasattr(table, "_id")
+            or hasattr(table, "_primarykey")
+            or hasattr(table, "_on_insert_error")
+        ):
+            return None
+        try:
+            from .compilers.sql import ParamSQL
+        except ImportError:  # pragma: no cover
+            return None
+        id_field = table._id
+        tail = " RETURNING %s;" % id_field._rname
+        compiled = []
+        for fields in items:
+            if not fields or any(f is id_field for f, _ in fields):
+                return None
+            q = self._insert(table, fields)
+            if not isinstance(q, ParamSQL) or not q.params:
+                return None
+            sql = str(q)
+            k = sql.find(") VALUES (")
+            if k < 0:
+                return None
+            k += len(") VALUES ")
+            if sql.endswith(tail):
+                group = sql[k : -len(tail)]
+            elif sql.endswith(");"):
+                group = sql[k:-1]
+            else:
+                return None
+            if not (group.startswith("(") and group.endswith(")")):
+                return None
+            compiled.append((sql[:k], group, q.params))
+        max_rows, max_params = self.bulk_insert_limits
+        ids = []
+        i, n = 0, len(compiled)
+        while i < n:
+            head = compiled[i][0]
+            groups, params = [], []
+            while (
+                i < n
+                and compiled[i][0] == head
+                and len(groups) < max_rows
+                and (not groups or len(params) + len(compiled[i][2]) <= max_params)
+            ):
+                groups.append(compiled[i][1])
+                params.extend(compiled[i][2])
+                i += 1
+            self.execute(ParamSQL(head + ",".join(groups) + tail, params))
+            batch = [int(r[0]) for r in self.cursor.fetchall()]
+            if len(batch) != len(groups):
+                raise RuntimeError(
+                    "bulk_insert: %d ids returned for %d rows" % (len(batch), len(groups))
+                )
+            # RETURNING order is not guaranteed; generated ids follow
+            # VALUES order, so sorting restores the row order.
+            batch.sort()
+            ids.extend(batch)
+        refs = []
+        for id in ids:
+            rid = Reference(id)
+            (rid._table, rid._record) = (table, None)
+            refs.append(rid)
+        return refs
 
     def create_table(self, *args, **kwargs):
         return self.migrator.create_table(*args, **kwargs)

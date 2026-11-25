@@ -28,9 +28,13 @@ Hooks subclasses may override:
 """
 
 import os
+import time
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from ._globals import GLOBAL_LOCKER, THREAD_LOCAL
+
+# id(connection) -> time.monotonic() when it was returned to a pool
+_RETURNED_AT: Dict[int, float] = {}
 
 
 class ConnectionPool:
@@ -38,6 +42,11 @@ class ConnectionPool:
 
     POOLS: Dict[str, List[Any]] = {}
     check_active_connection: bool = True
+    #: Pooled connections that were idle for less than this many seconds
+    #: skip the liveness test (a ``SELECT 1`` plus ``COMMIT`` round trip
+    #: on every checkout). 0 keeps the classic behaviour of testing every
+    #: checkout. Override per DAL with ``adapter_args={"pool_check_idle": 30}``.
+    pool_check_idle: float = 0
 
     def __init__(self):
         self._first_connection = False
@@ -91,10 +100,19 @@ class ConnectionPool:
                 pool = ConnectionPool.POOLS.get(self.uri, [])
                 ConnectionPool.POOLS[self.uri] = pool
                 # Pop until we find a usable connection (or exhaust pool).
+                idle_limit = (getattr(self, "adapter_args", None) or {}).get(
+                    "pool_check_idle", self.pool_check_idle
+                )
                 while connection is None and pool:
                     connection = pool.pop()
+                    since = _RETURNED_AT.pop(id(connection), None)
+                    check = self.check_active_connection and not (
+                        idle_limit
+                        and since is not None
+                        and time.monotonic() - since < idle_limit
+                    )
                     try:
-                        self.set_connection(connection, run_hooks=False)
+                        self.set_connection(connection, run_hooks=False, check=check)
                     except Exception:
                         connection = None
             finally:
@@ -107,7 +125,9 @@ class ConnectionPool:
 
         return connection
 
-    def set_connection(self, connection: Any, run_hooks: bool = False) -> None:
+    def set_connection(
+        self, connection: Any, run_hooks: bool = False, check: Optional[bool] = None
+    ) -> None:
         """
         Bind ``connection`` (or ``None``) into thread-local storage.
 
@@ -119,11 +139,13 @@ class ConnectionPool:
         setattr(THREAD_LOCAL, self._connection_uname_, connection)
         if connection:
             setattr(THREAD_LOCAL, self._cursors_uname_, connection.cursor())
+            if check is None:
+                check = self.check_active_connection
             if run_hooks:
                 self.after_connection_hook()
-            if self.check_active_connection:
+            if check:
                 self.test_connection()
-            if run_hooks or self.check_active_connection:
+            if run_hooks or check:
                 # DB-API drivers commonly disable autocommit.  In that mode,
                 # connection hooks and even a read-only liveness query can
                 # start a transaction implicitly.  This method runs only
@@ -197,6 +219,7 @@ class ConnectionPool:
                 pool = ConnectionPool.POOLS[self.uri]
                 if len(pool) < int(self.pool_size):
                     pool.append(self.connection)
+                    _RETURNED_AT[id(self.connection)] = time.monotonic()
                     really = False
             finally:
                 GLOBAL_LOCKER.release()

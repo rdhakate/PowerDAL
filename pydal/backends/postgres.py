@@ -62,6 +62,7 @@ class Postgres(SQLAdapter, metaclass=PostgresMeta):
     # when the URI asks for it (postgres:psycopg://...).
     drivers = ("psycopg2", "psycopg")
     support_distributed_transaction = True
+    bulk_insert_returning = True
 
     REGEX_URI = (
         "^(?P<user>[^:@]+)(:(?P<password>[^@]*))?"
@@ -383,6 +384,7 @@ class JDBCPostgres(Postgres):
     """PostgreSQL via the zxJDBC bridge (Jython only)."""
 
     drivers = ("zxJDBC",)
+    bulk_insert_returning = False
 
     REGEX_URI = (
         "^(?P<user>[^:@]+)(:(?P<password>[^@]*))?"
