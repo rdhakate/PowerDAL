@@ -57,7 +57,7 @@ import pickle
 from os.path import join as pjoin
 from urllib.parse import unquote
 
-from ._globals import DEFAULT, GLOBAL_LOCKER, THREAD_LOCAL
+from ._globals import DEFAULT, GLOBAL_LOCKER, THREAD_LOCAL, new_local
 from .utils import hashlib_md5
 from ._load import OrderedDict
 from .backend_base import BaseAdapter, NullAdapter
@@ -420,7 +420,7 @@ class DAL(Serializable, BasicStorage, metaclass=MetaDAL):
         self._LAZY_TABLES = {}
         self._lazy_tables = lazy_tables
         self._tables = SQLCallableList()
-        self._aliased_tables = threading.local()
+        self._aliased_tables = new_local()
         self._driver_args = driver_args
         self._adapter_args = adapter_args
         self._check_reserved = check_reserved
